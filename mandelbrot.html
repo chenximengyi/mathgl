@@ -1,0 +1,1396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Mandelbrot — WebGPU</title>
+<style>
+  :root {
+    --bg: #070a10;
+    --panel: #0b0f14c8;
+    --ink: #e8eef7;
+    --ink-dim: #9aa7b8;
+    --accent: #3dd6c6;
+    --danger: #f08080;
+    --radius: 10px;
+  }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    color: var(--ink);
+    font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #c {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    cursor: grab; touch-action: none;
+  }
+  #c.dragging { cursor: grabbing; }
+
+  #hud {
+    position: fixed; left: 12px; top: 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: var(--ink);
+    text-shadow: 0 1px 2px #000a;
+    pointer-events: none; user-select: none;
+    max-width: min(560px, calc(100vw - 340px));
+  }
+  #hud .dim { color: var(--ink-dim); }
+  #hud .accent { color: var(--accent); }
+  #hud .help {
+    margin-top: 6px; opacity: .72; font-family: system-ui, sans-serif;
+    font-size: 11px; line-height: 1.55;
+  }
+  #hud .row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #panel {
+    position: fixed; right: 12px; top: 10px; width: 300px;
+    max-height: calc(100vh - 20px); overflow: auto;
+    padding: 12px 14px 14px; border-radius: var(--radius);
+    background: var(--panel); backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #ffffff14;
+    box-shadow: 0 12px 40px #0006;
+  }
+  #panel.hidden { display: none; }
+  #panel h2 {
+    margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  #panel .section {
+    margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid #ffffff12;
+    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  #panel label {
+    display: grid; grid-template-columns: 1fr 120px 48px; gap: 8px; align-items: center;
+    margin: 7px 0;
+  }
+  #panel input[type="range"] { width: 120px; accent-color: var(--accent); }
+  #panel output {
+    text-align: right; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, Consolas, monospace;
+    color: var(--ink-dim); font-size: 11px;
+  }
+  #panel .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  #panel button, .chip {
+    appearance: none; border: 1px solid #ffffff1c; background: #ffffff0a;
+    color: var(--ink); border-radius: 7px; padding: 6px 10px;
+    font: 11px/1 system-ui, sans-serif; cursor: pointer;
+  }
+  #panel button:hover, .chip:hover { background: #ffffff16; border-color: #ffffff2e; }
+  #panel button.primary {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  #panel .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { padding: 5px 9px; font-size: 10.5px; }
+  .chip.active {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--accent);
+  }
+  #panel .note {
+    margin-top: 10px; padding: 8px 10px; border-radius: 7px;
+    background: #ffffff08; color: var(--ink-dim); font-size: 11px; line-height: 1.5;
+  }
+  #panel .note strong { color: var(--ink); font-weight: 600; }
+
+  #toolbar {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; gap: 6px; padding: 6px;
+    background: var(--panel); backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #ffffff14; border-radius: 999px;
+    box-shadow: 0 10px 30px #0007;
+  }
+  #toolbar button {
+    appearance: none; border: 0; background: transparent; color: var(--ink);
+    border-radius: 999px; padding: 8px 12px; font: 11px/1 system-ui, sans-serif;
+    cursor: pointer; opacity: .88;
+  }
+  #toolbar button:hover { background: #ffffff18; opacity: 1; }
+  #toolbar button.primary {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--accent); opacity: 1;
+  }
+  #toolbar .sep { width: 1px; background: #ffffff18; margin: 4px 2px; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%) translateY(8px);
+    background: #101822ee; color: var(--ink); padding: 8px 14px; border-radius: 8px;
+    border: 1px solid #ffffff18; opacity: 0; pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease; font-size: 12px;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #err {
+    position: fixed; inset: 0; display: none; padding: 40px;
+    color: var(--danger); font: 15px/1.6 system-ui, sans-serif;
+    white-space: pre-wrap; background: #070a10; z-index: 20; overflow: auto;
+  }
+  #err code {
+    display: block; margin-top: 16px; padding: 12px; background: #0b0f14;
+    border: 1px solid #f0808033; border-radius: 8px; color: var(--ink-dim);
+    white-space: pre-wrap; font: 12px/1.5 ui-monospace, Consolas, monospace;
+  }
+
+  @media (max-width: 720px) {
+    #hud { max-width: calc(100vw - 24px); }
+    #panel { width: min(300px, calc(100vw - 24px)); }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div class="row" id="hud-fps">starting…</div>
+  <div class="row" id="hud-view"></div>
+  <div class="row" id="hud-cursor"></div>
+  <div class="help">
+    拖拽平移 · 滚轮缩放（指向光标） · 双击放大 / Shift+双击缩小 · 触控：拖动 + 双指捏合<br>
+    H 设置 · R 重置 · Space 暂停色相流动 · C 复制链接 · 1–6 预设位置 · [ ] 幂次 d
+  </div>
+</div>
+
+<div id="panel" class="hidden">
+  <h2>Mandelbrot · 设置</h2>
+
+  <div class="section">公式</div>
+  <label>
+    <span>幂次 d（z<sup>d</sup> + c）</span>
+    <input type="range" id="s-power" min="2" max="8" step="1">
+    <output id="o-power"></output>
+  </label>
+
+  <div class="section">位置</div>
+  <div class="presets" id="presets"></div>
+  <div class="btns">
+    <button id="btn-reset" class="primary">重置视图</button>
+    <button id="btn-share">复制链接</button>
+  </div>
+
+  <div class="section">渲染</div>
+  <label>
+    <span>最大迭代</span>
+    <input type="range" id="s-iter" min="64" max="2000" step="16">
+    <output id="o-iter"></output>
+  </label>
+  <label>
+    <span>自动迭代（随缩放）</span>
+    <input type="checkbox" id="s-autoiter" checked>
+    <output></output>
+  </label>
+  <label>
+    <span>边界辉光</span>
+    <input type="range" id="s-glow" min="0" max="2" step="0.01">
+    <output id="o-glow"></output>
+  </label>
+  <label>
+    <span>暗角</span>
+    <input type="range" id="s-vignette" min="0" max="1" step="0.01">
+    <output id="o-vignette"></output>
+  </label>
+
+  <div class="section">上色</div>
+  <label>
+    <span>色相密度</span>
+    <input type="range" id="s-palscale" min="0.05" max="1.2" step="0.01">
+    <output id="o-palscale"></output>
+  </label>
+  <label>
+    <span>色相流速</span>
+    <input type="range" id="s-palspeed" min="0" max="0.12" step="0.001">
+    <output id="o-palspeed"></output>
+  </label>
+
+  <div class="section">画面</div>
+  <label>
+    <span>渲染比例</span>
+    <input type="range" id="s-scale" min="0.35" max="1" step="0.05">
+    <output id="o-scale"></output>
+  </label>
+  <label>
+    <span>交互时降分辨率</span>
+    <input type="checkbox" id="s-fastmove" checked>
+    <output></output>
+  </label>
+
+  <div class="note">
+    <strong>精度</strong>：当前视图半高约 <span id="prec-h">—</span>。
+    扰动法（perturbation）+ CPU f64 参考轨道，可推到约 1e-15；比纯 f32 深好几个数量级。<br>
+    <strong>d &gt; 2</strong>：内循环按完整二项式展开（Σ C(d,k)·R<sup>d−k</sup>·Z<sup>k</sup>，系数在 CPU 预算），
+    没有截断，误差级别和 d = 2 一样只剩 f32 的 Z。
+  </div>
+</div>
+
+<div id="toolbar">
+  <button id="tb-zoom-out" title="缩小">−</button>
+  <button id="tb-reset" class="primary" title="重置 (R)">重置</button>
+  <button id="tb-zoom-in" title="放大">＋</button>
+  <div class="sep"></div>
+  <button id="tb-panel" title="设置 (H)">设置</button>
+  <button id="tb-share" title="复制链接 (C)">链接</button>
+</div>
+
+<div id="toast"></div>
+<div id="err"></div>
+
+<script type="module">
+// ============================================================================
+//  Mandelbrot — interactive WebGPU explorer
+//
+//  Ports demo/mandelbrot/mandelbrot.glsl to WGSL and turns the offline dive
+//  into a pan/zoom instrument. Same visual language: smooth escape time,
+//  sqrt-compressed cyclic palette, 1px boundary rim.
+//
+//  Chrome / architecture reference: Noniv/web-ocean — self-contained WebGPU
+//  page, HUD + glass settings panel, no engine.
+//
+//  Precision strategy — perturbation, not double-float:
+//  GPU compilers cancel the classic two-sum residual to 0 inside a big
+//  fragment shader, which collapses emulated doubles to f32. Instead the CPU
+//  walks a f64 reference orbit at the view centre and the GPU iterates only
+//  the small delta Z. Z is O(½h) so f32 is enough for it at any useful zoom.
+//
+//  z^d + c is a parameter, not a separate page. The perturbation series
+//      Z' = Σ C(d,k)·R^(d-k)·Z^k + dc
+//  has coefficients that depend only on R, so the CPU computes them once per
+//  reference point and the GPU reads a table — the power costs a linear number
+//  of complex multiplies per step and nothing else.
+// ============================================================================
+
+const P = {
+  power: 2,          // d in z^d + c
+  maxIter: 400,
+  autoIter: true,
+  glow: 0.85,
+  vignette: 0.85,
+  palScale: 0.45,
+  palSpeed: 0.02,
+  renderScale: 1,
+  fastMove: true,
+  fastScale: 0.55,
+};
+
+const VIEW = {
+  cx: -0.5, cy: 0.0, h: 1.45,
+  tx: -0.5, ty: 0.0, th: 1.45,
+};
+
+const PRESETS = [
+  { id: 'full',     name: '全集',       cx: -0.5,                cy: 0.0,                  h: 1.45 },
+  { id: 'seahorse', name: '海马谷',     cx: -0.7436438870371587, cy: 0.13182590420531197,  h: 0.02 },
+  { id: 'elephant', name: '大象谷',     cx: 0.2825,              cy: 0.01,                 h: 0.03 },
+  { id: 'mini',     name: '迷你曼德博', cx: -1.7687722,          cy: 0.0047322,            h: 0.0035 },
+  { id: 'spiral',   name: '螺旋',       cx: -0.761574,           cy: -0.0847596,           h: 0.008 },
+  { id: 'dendrite', name: '树枝状',     cx: -0.235125,           cy: 0.827215,             h: 0.012 },
+];
+
+const qs = new URLSearchParams(location.search);
+
+function fail(msg, detail) {
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent = msg;
+  if (detail) {
+    const code = document.createElement('code');
+    code.textContent = detail;
+    el.appendChild(code);
+  }
+  throw new Error(msg);
+}
+
+function formatCoord(x, h) {
+  const digits = Math.min(24, Math.max(8, Math.ceil(-Math.log10(Math.max(h, 1e-30))) + 6));
+  return x.toFixed(digits);
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove('show'), 1600);
+}
+
+// ---------------------------------------------------------------------------
+// WGSL — perturbation Mandelbrot
+// ---------------------------------------------------------------------------
+// Params (64 bytes):
+//   0  resolution.xy
+//   8  halfH, time
+//  16  maxIter, palSpeed
+//  24  palScale, glow
+//  32  vignette, animTime
+//  40  refBase (index into ref buffer), refCount
+//  48  refOffset.xy
+//  56  power (d in z^d + c), plain (1 = reference pinned at the origin)
+const WGSL = /* wgsl */`
+struct Params {
+  resolution : vec2f,
+  halfH      : f32,
+  time       : f32,
+  maxIter    : f32,
+  palSpeed   : f32,
+  palScale   : f32,
+  glow       : f32,
+  vignette   : f32,
+  animTime   : f32,
+  refBase    : f32,
+  refCount   : f32,
+  refOffset  : vec2f,
+  power      : f32,
+  plain      : f32,
+};
+
+@group(0) @binding(0) var<uniform> U : Params;
+@group(0) @binding(1) var<storage, read> refOrbit : array<vec2f>;
+
+// The reference buffer carries a block per binomial coefficient plus the orbit
+// itself, all computed on the CPU in f64:
+//   block 0      R_n
+//   block k      C(d,k)·R_n^(d-k)     k = 1 .. d-1
+// Hoisting the coefficients onto the CPU is what makes the power a cheap
+// uniform: the shader would otherwise have to raise a complex number to the
+// d-th power on every step of the hot loop.
+const REF_SLOTS : u32 = 2048u;
+
+fn ramp(x : f32) -> vec3f {
+  let f = fract(x);
+  let navy  = vec3f(0.035, 0.055, 0.130);
+  let teal  = vec3f(0.130, 0.640, 0.620);
+  let vilet = vec3f(0.640, 0.420, 1.000);
+  let hlite = vec3f(0.960, 0.980, 1.000);
+  var col = mix(navy, teal,  smoothstep(0.00, 0.30, f));
+  col     = mix(col,  vilet, smoothstep(0.30, 0.62, f));
+  col     = mix(col,  hlite, smoothstep(0.62, 0.84, f));
+  col     = mix(col,  navy,  smoothstep(0.84, 1.00, f));
+  return col;
+}
+
+fn vignetteFx(col : vec3f, pix : vec2f, res : vec2f, amount : f32) -> vec3f {
+  if (amount <= 0.0) { return col; }
+  let q = (pix / res) * 2.0 - 1.0;
+  let r = length(q * vec2f(1.0, 0.85));
+  let v = 1.0 - amount * 0.42 * smoothstep(0.35, 1.35, r);
+  return col * v;
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+  let x = f32(i32(vi) / 2) * 4.0 - 1.0;
+  let y = f32(i32(vi) % 2) * 4.0 - 1.0;
+  return vec4f(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) frag : vec4f) -> @location(0) vec4f {
+  let res = U.resolution;
+  let pix = frag.xy;
+
+  // Pixel -> offset from the *view* centre, then shift into the frame of the
+  // stable reference orbit (view centre - ref centre). Keeping the reference
+  // still across a short pan avoids a CPU rebuild every frame.
+  let local = vec2f(pix.x - 0.5 * res.x, -(pix.y - 0.5 * res.y)) * (2.0 * U.halfH / res.y);
+  let dc = local + U.refOffset;
+
+  // Z = z - R (delta). For z^d + c the series around R is
+  //   Z_{n+1} = d·R_n^(d-1)·Z_n + C(d,2)·R_n^(d-2)·Z_n^2 + … + dc
+  // and d = 2 keeps its original exact two-term form below, byte for byte.
+  var Zr = 0.0;
+  var Zi = 0.0;
+  var n = 0.0;
+  var escaped = false;
+  let cap = U.maxIter;
+  let base = u32(U.refBase);
+  let refN = u32(U.refCount);
+
+  for (var i = 0u; i < 2048u; i++) {
+    if (n >= cap) { break; }
+    let idx = base + min(i, refN - 1u);
+    let zr = Zr; let zi = Zi;
+    var nr : f32;
+    var ni : f32;
+
+    if (U.plain > 0.5) {
+      // Reference pinned at the origin. Around R = 0 every coefficient of the
+      // series vanishes (for d > 2 it collapses to Z <- dc, a blank frame), so
+      // step the orbit directly instead: Z <- Z^d + dc. For d = 2 that is the
+      // same one multiply as before.
+      var pr = zr; var pi = zi;
+      for (var k = 1u; k < 16u; k++) {
+        if (f32(k) >= U.power) { break; }
+        let tr = pr * zr - pi * zi;
+        pi = pr * zi + pi * zr;
+        pr = tr;
+      }
+      nr = pr + dc.x;
+      ni = pi + dc.y;
+    } else if (U.power < 2.5) {
+      // 2 R Z + Z^2 + dc — unchanged from the d = 2 original.
+      let R = refOrbit[idx];
+      let rr = R.x; let ri = R.y;
+      let twoRZ_r = 2.0 * (rr * zr - ri * zi);
+      let twoRZ_i = 2.0 * (rr * zi + ri * zr);
+      let z2_r = zr * zr - zi * zi;
+      let z2_i = 2.0 * zr * zi;
+      nr = twoRZ_r + z2_r + dc.x;
+      ni = twoRZ_i + z2_i + dc.y;
+    } else {
+      // Exact binomial — no truncation. With z = R + Z,
+      //   Z' = Σ_{k=1..d} C(d,k)·R^(d-k)·Z^k + dc
+      //      = Z·(D₁ + Z·(D₂ + Z·(… + Z))) + dc
+      // and every D_k = C(d,k)·R^(d-k) is precomputed on the CPU, so the GPU
+      // pays only d complex multiplies per step — the same order as the d = 2
+      // code above, and the result is exact in the same sense: the only error
+      // left is f32 on Z, which is what the whole method is built around.
+      //
+      // Truncating after Z² (the obvious "cheap" version) is not viable: near
+      // the boundary |Z| climbs to O(|R|), the third-order term stops being
+      // negligible, and d = 3 already drifts by ~2 units of smooth escape time
+      // at a mere 1e-6 half-height — a visibly wrong picture, not noise.
+      var hr = 1.0;
+      var hi = 0.0;
+      for (var k = u32(U.power) - 1u; k >= 1u; k--) {
+        let D = refOrbit[k * REF_SLOTS + idx];
+        let t = hr * zr - hi * zi + D.x;
+        hi = hr * zi + hi * zr + D.y;
+        hr = t;
+      }
+      nr = (hr * zr - hi * zi) + dc.x;
+      ni = (hr * zi + hi * zr) + dc.y;
+    }
+    Zr = nr;
+    Zi = ni;
+
+    // |R + Z|: |R|^2 dominates once |R| grows; |Z| matters near the origin.
+    let Rn = refOrbit[base + min(i + 1u, refN - 1u)];
+    let fr = Rn.x + Zr;
+    let fi = Rn.y + Zi;
+    // Use max(|R+Z|, |Z|) so a tiny Z near a cancelled R still escapes correctly.
+    let magRZ = fr * fr + fi * fi;
+    let magZ = Zr * Zr + Zi * Zi;
+    let mag = max(magRZ, magZ);
+    if (mag > 256.0) { escaped = true; break; }
+    n += 1.0;
+  }
+
+  // Smooth escape time. mu must be written in uniform control flow — fwidth()
+  // of a value stored only inside if (escaped) is undefined and becomes NaN,
+  // which paints the whole frame black.
+  let R = refOrbit[base + min(u32(n) + 1u, refN - 1u)];
+  let fr = R.x + Zr;
+  let fi = R.y + Zi;
+  let mag = max(fr * fr + fi * fi, Zr * Zr + Zi * Zi);
+  let logZn = 0.5 * log(max(mag, 1e-20));
+  // The potential's normalising constant is log d, not log 2: for d = 2 this
+  // evaluates to exactly the old expression.
+  let ld = log(max(U.power, 2.0));
+  let nu = log(max(logZn / ld, 1e-20)) / ld;
+  let muEsc = n + 1.0 - nu;
+  let mu = select(cap, muEsc, escaped);
+
+  let m = U.palScale * sqrt(max(mu, 0.0)) + U.palSpeed * U.animTime;
+  var col = mix(ramp(m), vec3f(0.012, 0.020, 0.045), select(0.0, 1.0, !escaped));
+
+  let aa = fwidth(mu);
+  let rim = clamp((aa - 3.0) / 12.0, 0.0, 1.0);
+  col += vec3f(0.30, 0.62, 1.00) * rim * U.glow * 0.75;
+
+  col = vignetteFx(col, pix, res, U.vignette);
+  return vec4f(col, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// WGSL — present pass
+// ---------------------------------------------------------------------------
+// Interaction renders the fractal into an offscreen texture at reduced size and
+// stretches it here. Doing it this way (instead of resizing the canvas) keeps
+// the drawing buffer alive, so no frame is ever presented empty.
+const BLIT_WGSL = /* wgsl */`
+struct Frame {
+  uvScale  : vec2f,
+  uvOffset : vec2f,
+};
+@group(0) @binding(0) var samp : sampler;
+@group(0) @binding(1) var src  : texture_2d<f32>;
+@group(0) @binding(2) var<uniform> F : Frame;
+
+struct VOut {
+  @builtin(position) pos : vec4f,
+  @location(0) uv : vec2f,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi : u32) -> VOut {
+  let x = f32(i32(vi) / 2) * 4.0 - 1.0;
+  let y = f32(i32(vi) % 2) * 4.0 - 1.0;
+  var o : VOut;
+  o.pos = vec4f(x, y, 0.0, 1.0);
+  o.uv = vec2f(x * 0.5 + 0.5, 0.5 - y * 0.5);
+  return o;
+}
+
+@fragment
+fn fs(in : VOut) -> @location(0) vec4f {
+  return textureSample(src, samp, in.uv * F.uvScale + F.uvOffset);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Reference orbit (CPU f64)
+// ---------------------------------------------------------------------------
+// The series Z = z - R is only meaningful while R itself stays bounded. Once R
+// escapes, |R| squares itself past f32 range and every pixel inherits that
+// escape — so callers must know *whether* the orbit survived, not just its
+// values. `escaped` is that flag.
+//
+// Alongside R the caller needs D_k = C(d,k)·R^(d-k) for k = 1..d-1 — the exact
+// binomial coefficients of the perturbation series. Computing them here, once
+// per reference point in f64, is why the power costs nothing per pixel: the GPU
+// reads the table instead of raising a complex number to the d-th power.
+function binom(n, k) {
+  let r = 1;
+  for (let i = 1; i <= k; i++) r = (r * (n - k + i)) / i;
+  return r;
+}
+
+function computeReference(cr, ci, maxIter, d) {
+  const n = maxIter + 1;
+  const zr = new Float32Array(n);
+  const zi = new Float32Array(n);
+  const coef = [];                       // one (re, im) block per k
+  const C = [];
+  for (let k = 1; k < d; k++) {
+    coef.push(new Float32Array(n * 2));
+    C.push(binom(d, k));
+  }
+  const prs = new Float64Array(d + 1);
+  const pis = new Float64Array(d + 1);
+  let xr = 0, xi = 0;
+  let escaped = false;
+
+  const fillTail = (i, x, y) => {
+    for (let j = i + 1; j < n; j++) {
+      zr[j] = x; zi[j] = y;
+      for (const c of coef) { c[j * 2] = 0; c[j * 2 + 1] = 0; }
+    }
+  };
+
+  for (let i = 0; i < n; i++) {
+    zr[i] = xr; zi[i] = xi;
+
+    // Powers of the current point, accumulated in one pass: z^d (the next
+    // orbit value) plus every z^(d-k) the coefficient table needs. d <= 8.
+    prs[0] = 1; pis[0] = 0;
+    let pr = 1, pi = 0;
+    for (let m = 1; m <= d; m++) {
+      const t = pr * xr - pi * xi;
+      pi = pr * xi + pi * xr;
+      pr = t;
+      prs[m] = pr; pis[m] = pi;
+    }
+    for (let k = 1; k < d; k++) {
+      const m = d - k;
+      coef[k - 1][i * 2] = C[k - 1] * prs[m];
+      coef[k - 1][i * 2 + 1] = C[k - 1] * pis[m];
+    }
+
+    xr = pr + cr; xi = pi + ci;
+    if (!Number.isFinite(xr) || !Number.isFinite(xi)) {
+      // freeze the tail so the GPU can index safely
+      fillTail(i, zr[i], zi[i]);
+      escaped = true;
+      break;
+    }
+    if (xr * xr + xi * xi > 1e6) {
+      fillTail(i, xr, xi);
+      escaped = true;
+      break;
+    }
+  }
+  return { zr, zi, coef, n, escaped };
+}
+
+// How many steps a candidate point survives. Allocation-free, so it is cheap
+// enough to score a whole grid of candidates.
+function escapeCount(cr, ci, budget, d) {
+  let zr = 0, zi = 0;
+  for (let i = 0; i < budget; i++) {
+    let pr = zr, pi = zi;
+    for (let k = 1; k < d; k++) {
+      const tr = pr * zr - pi * zi;
+      pi = pr * zi + pi * zr;
+      pr = tr;
+    }
+    zr = pr + cr;
+    zi = pi + ci;
+    if (!Number.isFinite(zr) || !Number.isFinite(zi)) return i;
+    if (zr * zr + zi * zi > 1e6) return i;
+  }
+  return budget;
+}
+
+// Picking the view centre as the perturbation reference looks obvious and is
+// wrong: the centre is usually *outside* the set, its orbit escapes in ~30
+// steps, and the whole frame collapses into a flat gradient — a full-screen
+// flash every time you pan across the boundary. So sample a grid over the view
+// and keep a point that survives the entire iteration budget, preferring the
+// one closest to the centre (a short `refOffset` keeps the series accurate).
+const REF_GRID = 5;
+
+// Below this half-height, plain iteration is no longer viable: dc becomes the
+// absolute coordinate (~0.75) and f32 resolves it to ~6e-8, so a view narrower
+// than a few of those steps turns into blocks. Shallow views can still use it.
+const PLAIN_MIN_H = 1e-4;
+
+function pickReference(cx, cy, hw, hh, budget, pow) {
+  let bestCx = cx, bestCy = cy, bestScore = -1, bestDist = Infinity;
+
+  const score = (px, py) => {
+    const s = escapeCount(px, py, budget, pow);
+    const d = Math.hypot(px - cx, py - cy);
+    if (s > bestScore || (s === bestScore && d < bestDist)) {
+      bestScore = s; bestDist = d; bestCx = px; bestCy = py;
+    }
+    return s;
+  };
+
+  // Fast path — the centre is already inside the set, and it is the candidate
+  // with the smallest offset, so nothing can beat it.
+  if (score(cx, cy) >= budget) return { cx, cy, survived: true };
+
+  for (let gy = 0; gy < REF_GRID; gy++) {
+    const v = (gy / (REF_GRID - 1)) * 2 - 1;
+    for (let gx = 0; gx < REF_GRID; gx++) {
+      if (gx === (REF_GRID - 1) / 2 && gy === (REF_GRID - 1) / 2) continue;
+      const u = (gx / (REF_GRID - 1)) * 2 - 1;
+      score(cx + u * hw, cy + v * hh);
+    }
+  }
+  return { cx: bestCx, cy: bestCy, survived: bestScore >= budget };
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+async function main() {
+  if (!navigator.gpu) {
+    fail(
+      '这个浏览器没有 WebGPU。\n\n' +
+      '请使用较新的 Chrome / Edge（或启用了 WebGPU 的 Safari），' +
+      '并确保通过 http://localhost 或 https 打开。',
+      'navigator.gpu is undefined'
+    );
+  }
+
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) fail('找不到 WebGPU 适配器（GPU 不可用）。', 'requestAdapter() returned null');
+
+  const device = await adapter.requestDevice();
+  device.lost.then((info) => fail('WebGPU device lost: ' + info.message, info.reason));
+  device.onuncapturederror = (e) => console.error('GPU error', e.error);
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('webgpu');
+  if (!ctx) fail('无法创建 WebGPU canvas context。');
+
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  const configure = () => {
+    ctx.configure({
+      device, format,
+      alphaMode: 'opaque',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      size: [canvas.width, canvas.height],
+    });
+  };
+
+  const module = device.createShaderModule({ code: WGSL, label: 'mandelbrot' });
+  const info = await module.getCompilationInfo();
+  const logLines = [];
+  let bad = false;
+  for (const msg of info.messages) {
+    if (msg.type === 'error') bad = true;
+    if (msg.type !== 'info') {
+      const line = WGSL.split('\n')[msg.lineNum - 1] ?? '';
+      logLines.push(`${msg.type} ${msg.lineNum}:${msg.linePos} ${msg.message}\n    ${line}`);
+      console.warn('[wgsl]', msg);
+    }
+  }
+  if (bad) fail('WGSL 编译失败，详见下方信息。', logLines.join('\n'));
+
+  const pipeline = device.createRenderPipeline({
+    label: 'mandelbrot',
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vs' },
+    fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  const ubo = device.createBuffer({
+    label: 'params',
+    size: 64,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  // ---- present pass: stretch the offscreen frame onto the canvas ----
+  const blitModule = device.createShaderModule({ code: BLIT_WGSL, label: 'blit' });
+  const blitPipeline = device.createRenderPipeline({
+    label: 'blit',
+    layout: 'auto',
+    vertex: { module: blitModule, entryPoint: 'vs' },
+    fragment: { module: blitModule, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  const blitUbo = device.createBuffer({
+    label: 'blit frame',
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const blitUv = new Float32Array(4);
+  const sampler = device.createSampler({
+    magFilter: 'linear', minFilter: 'linear',
+    addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
+  });
+
+  // One offscreen target, resized only when the window changes. Rendering at a
+  // fraction of it (viewport) is what makes a drag cheap: resolution is what we
+  // trade, never the iteration budget — dropping iterations moves the
+  // escaped/interior boundary and visibly pops the whole picture.
+  let sceneTex = null, sceneW = 0, sceneH = 0, sceneView = null, blitBind = null;
+  function ensureScene(w, h) {
+    if (sceneTex && sceneW === w && sceneH === h) return;
+    if (sceneTex) sceneTex.destroy();
+    sceneTex = device.createTexture({
+      label: 'scene',
+      size: [w, h],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    sceneW = w; sceneH = h;
+    sceneView = sceneTex.createView();
+    blitBind = device.createBindGroup({
+      label: 'blit',
+      layout: blitPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: sceneView },
+        { binding: 2, resource: { buffer: blitUbo } },
+      ],
+    });
+  }
+
+  // Reference orbit buffer — interleaved (zr, zi) f32. The orbit is pinned to a
+  // complex point and reused across a short pan / zoom; refOffset carries the
+  // live view centre in that frame.
+  //
+  // Fixed capacity on purpose: maxIter is capped at 2000 and the orbit is built
+  // 1.35x long, so 2048 slots always fit. The old grow-by-destroy path tore
+  // down a buffer the GPU might still be reading and rebuilt the bind group
+  // mid-gesture, which is a second, rarer source of dropped frames.
+  const REF_SLOTS = 2048;
+  const POWER_MAX = 8;
+  // One block per binomial coefficient (k = 1..d-1) plus the orbit itself.
+  const refBuf = device.createBuffer({
+    label: 'ref orbit',
+    size: REF_SLOTS * 8 * POWER_MAX,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  const bind = device.createBindGroup({
+    label: 'params',
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: ubo } },
+      { binding: 1, resource: { buffer: refBuf } },
+    ],
+  });
+
+  const ref = {
+    cx: NaN, cy: NaN,      // the reference point itself
+    viewCx: NaN, viewCy: NaN, // view centre when the reference was chosen
+    h: NaN,                // view half-height when the reference was chosen
+    iter: 0,
+    n: 0,
+    power: 0,              // d the orbit and its coefficient tables were built for
+    plain: false,          // reference is the origin => no perturbation
+    valid: false,
+  };
+
+  const params = new Float32Array(16);
+  let W = 1, H = 1;
+
+  // ---- URL state ----
+  if (qs.has('cx')) VIEW.cx = VIEW.tx = Number(qs.get('cx'));
+  if (qs.has('cy')) VIEW.cy = VIEW.ty = Number(qs.get('cy'));
+  if (qs.has('h')) VIEW.h = VIEW.th = Number(qs.get('h'));
+  if (qs.has('iter')) P.maxIter = Number(qs.get('iter'));
+  if (qs.has('d')) {
+    const d = Math.round(Number(qs.get('d')));
+    if (Number.isFinite(d)) P.power = Math.min(8, Math.max(2, d));
+  }
+  if (qs.has('pal')) P.palScale = Number(qs.get('pal'));
+  if (qs.has('ps')) P.palSpeed = Number(qs.get('ps'));
+  if (qs.has('glow')) P.glow = Number(qs.get('glow'));
+  if (qs.has('vig')) P.vignette = Number(qs.get('vig'));
+  if (qs.get('ui') === '0') {
+    document.getElementById('hud').style.display = 'none';
+    document.getElementById('panel').classList.add('hidden');
+    document.getElementById('toolbar').style.display = 'none';
+  }
+  if (!Number.isFinite(VIEW.th) || VIEW.th <= 0) {
+    VIEW.tx = VIEW.cx = -0.5; VIEW.ty = VIEW.cy = 0; VIEW.th = VIEW.h = 1.45;
+  }
+
+  // ---- interaction ----
+  let interacting = false;
+  let animating = true;
+  let animClock = 0;
+  let interactTimer = 0;
+  let lastT = performance.now();
+  let fpsAcc = 0, fpsN = 0, fpsT = 0;
+  let activePreset = null;
+  let resizeTimer = 0;
+
+  const hudFps = document.getElementById('hud-fps');
+  const hudView = document.getElementById('hud-view');
+  const hudCursor = document.getElementById('hud-cursor');
+
+  function bumpInteract() {
+    interacting = true;
+    clearTimeout(interactTimer);
+    interactTimer = setTimeout(() => {
+      interacting = false;
+    }, 180);
+  }
+
+  // Canvas size is stable while dragging/zooming. Changing canvas.width/height
+  // clears the drawing buffer and flashes, so the old "fast move" path that
+  // resized to 55% is gone — fast move only drops the iteration budget.
+  //
+  // This is *not* called per frame: reading clientWidth forces a style/layout
+  // flush every tick, and a reconfigure between getCurrentTexture() calls is
+  // exactly the kind of thing that shows up as a one-frame flicker.
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(canvas.clientWidth * dpr * P.renderScale));
+    const h = Math.max(1, Math.round(canvas.clientHeight * dpr * P.renderScale));
+    if (w === canvas.width && h === canvas.height) return;
+    canvas.width = w;
+    canvas.height = h;
+    W = w; H = h;
+    configure();
+  }
+
+  function screenToMath(px, py) {
+    const rect = canvas.getBoundingClientRect();
+    const s = (2 * VIEW.h) / rect.height;
+    return [
+      VIEW.cx + (px - rect.left - rect.width * 0.5) * s,
+      VIEW.cy - (py - rect.top - rect.height * 0.5) * s,
+    ];
+  }
+
+  function panByPixels(dxPx, dyPx) {
+    const rect = canvas.getBoundingClientRect();
+    const s = (2 * VIEW.th) / rect.height;
+    VIEW.tx -= dxPx * s;
+    VIEW.ty += dyPx * s;
+    VIEW.cx = VIEW.tx;
+    VIEW.cy = VIEW.ty;
+    bumpInteract();
+  }
+
+  function zoomAt(px, py, factor) {
+    const [mx, my] = screenToMath(px, py);
+    const nh = VIEW.th * factor;
+    if (!Number.isFinite(nh) || nh <= 0) return;
+    VIEW.tx = mx + (VIEW.tx - mx) * factor;
+    VIEW.ty = my + (VIEW.ty - my) * factor;
+    VIEW.th = nh;
+    bumpInteract();
+  }
+
+  function resetView() {
+    const p = PRESETS[0];
+    VIEW.tx = p.cx; VIEW.ty = p.cy; VIEW.th = fullViewH();
+    activePreset = p.id;
+    syncPresetChips();
+    bumpInteract();
+  }
+
+  function gotoPreset(p) {
+    VIEW.tx = p.cx; VIEW.ty = p.cy;
+    VIEW.th = p.id === 'full' ? fullViewH() : p.h;
+    activePreset = p.id;
+    syncPresetChips();
+    bumpInteract();
+  }
+
+  const pointers = new Map();
+  let pinchDist = 0;
+
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    canvas.classList.add('dragging');
+    activePreset = null;
+    syncPresetChips();
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+    }
+    bumpInteract();
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const [mx, my] = screenToMath(e.clientX, e.clientY);
+    hudCursor.innerHTML =
+      `<span class="dim">cursor</span>  ${formatCoord(mx, VIEW.h)} <span class="dim">+</span> ` +
+      `${formatCoord(my, VIEW.h)}i`;
+
+    const p = pointers.get(e.pointerId);
+    if (!p) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    p.x = e.clientX; p.y = e.clientY;
+
+    if (pointers.size === 1) {
+      panByPixels(dx, dy);
+    } else if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      if (pinchDist > 0 && dist > 0) zoomAt(midX, midY, pinchDist / dist);
+      pinchDist = dist;
+      bumpInteract();
+    }
+  });
+
+  const endPointer = (e) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size === 0) {
+      canvas.classList.remove('dragging');
+      pinchDist = 0;
+    } else if (pointers.size === 1) {
+      pinchDist = 0;
+    }
+    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+    bumpInteract();
+  };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = Math.exp(e.deltaY * 0.0015);
+    zoomAt(e.clientX, e.clientY, Math.min(8, Math.max(0.125, factor)));
+    bumpInteract();
+  }, { passive: false });
+
+  canvas.addEventListener('dblclick', (e) => {
+    zoomAt(e.clientX, e.clientY, e.shiftKey ? 2.2 : 1 / 2.2);
+    bumpInteract();
+  });
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement) return;
+    switch (e.code) {
+      case 'KeyH':
+        document.getElementById('panel').classList.toggle('hidden');
+        break;
+      case 'KeyR':
+        resetView();
+        toast('已重置');
+        break;
+      case 'Space':
+        e.preventDefault();
+        animating = !animating;
+        toast(animating ? '色相流动：开' : '色相流动：停');
+        break;
+      case 'KeyC':
+        copyShare();
+        break;
+      case 'Equal':
+      case 'NumpadAdd':
+        zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.6);
+        break;
+      case 'Minus':
+      case 'NumpadSubtract':
+        zoomAt(innerWidth / 2, innerHeight / 2, 1.6);
+        break;
+      case 'BracketLeft': setPower(P.power - 1); break;
+      case 'BracketRight': setPower(P.power + 1); break;
+      case 'Digit1': gotoPreset(PRESETS[0]); break;
+      case 'Digit2': gotoPreset(PRESETS[1]); break;
+      case 'Digit3': gotoPreset(PRESETS[2]); break;
+      case 'Digit4': gotoPreset(PRESETS[3]); break;
+      case 'Digit5': gotoPreset(PRESETS[4]); break;
+      case 'Digit6': gotoPreset(PRESETS[5]); break;
+    }
+  });
+
+  function buildShareUrl() {
+    const u = new URL(location.href.split('#')[0]);
+    u.search = '';
+    const q = u.searchParams;
+    q.set('cx', String(VIEW.tx));
+    q.set('cy', String(VIEW.ty));
+    q.set('h', String(VIEW.th));
+    q.set('iter', String(P.maxIter));
+    q.set('d', String(P.power));
+    q.set('pal', String(P.palScale));
+    q.set('ps', String(P.palSpeed));
+    q.set('glow', String(P.glow));
+    q.set('vig', String(P.vignette));
+    return u.toString();
+  }
+
+  function copyShare() {
+    const url = buildShareUrl();
+    const done = () => toast('链接已复制');
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(done, () => prompt('复制链接：', url));
+    } else {
+      prompt('复制链接：', url);
+    }
+  }
+
+  document.getElementById('tb-zoom-in').onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.8);
+  document.getElementById('tb-zoom-out').onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1.8);
+  document.getElementById('tb-reset').onclick = () => { resetView(); toast('已重置'); };
+  document.getElementById('tb-panel').onclick = () => document.getElementById('panel').classList.toggle('hidden');
+  document.getElementById('tb-share').onclick = copyShare;
+  document.getElementById('btn-reset').onclick = () => { resetView(); toast('已重置'); };
+  document.getElementById('btn-share').onclick = copyShare;
+
+  const presetsEl = document.getElementById('presets');
+  function syncPresetChips() {
+    for (const el of presetsEl.querySelectorAll('.chip')) {
+      el.classList.toggle('active', el.dataset.id === activePreset);
+    }
+  }
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.dataset.id = p.id;
+    b.textContent = p.name;
+    b.onclick = () => { gotoPreset(p); toast('→ ' + p.name); };
+    presetsEl.appendChild(b);
+  }
+  syncPresetChips();
+
+  function bindRange(id, outId, key, fmt) {
+    const inp = document.getElementById(id);
+    const out = document.getElementById(outId);
+    inp.value = String(P[key]);
+    out.textContent = fmt(P[key]);
+    inp.addEventListener('input', () => {
+      P[key] = Number(inp.value);
+      out.textContent = fmt(P[key]);
+      if (key === 'renderScale') resize();
+      // The orbit and its coefficient tables are built for one d; changing the
+      // power has to invalidate them or the frame keeps the old formula.
+      if (key === 'power') { ref.valid = false; bumpInteract(); }
+    });
+  }
+  bindRange('s-power', 'o-power', 'power', (v) => 'z^' + v);
+  bindRange('s-iter', 'o-iter', 'maxIter', (v) => String(v));
+  bindRange('s-glow', 'o-glow', 'glow', (v) => Number(v).toFixed(2));
+  bindRange('s-vignette', 'o-vignette', 'vignette', (v) => Number(v).toFixed(2));
+  bindRange('s-palscale', 'o-palscale', 'palScale', (v) => Number(v).toFixed(2));
+  bindRange('s-palspeed', 'o-palspeed', 'palSpeed', (v) => Number(v).toFixed(3));
+  bindRange('s-scale', 'o-scale', 'renderScale', (v) => Number(v).toFixed(2) + '×');
+
+  const autoIter = document.getElementById('s-autoiter');
+  autoIter.checked = P.autoIter;
+  autoIter.addEventListener('change', () => { P.autoIter = autoIter.checked; });
+
+  const fastMove = document.getElementById('s-fastmove');
+  fastMove.checked = P.fastMove;
+  fastMove.addEventListener('change', () => {
+    P.fastMove = fastMove.checked;
+  });
+
+  // Measured outer radius of the set for d = 2..8 (dense scan of escape counts,
+  // budget 3000). Only used to frame the "whole set" view with the same margin
+  // the classic d = 2 preset has — 1.45 / 1.364 — so d = 2 lands on 1.45
+  // exactly and the higher powers neither crop nor swim in empty space.
+  const SET_RADIUS = [1.364, 1.292, 1.256, 1.164, 1.148, 1.112, 1.096];
+  function fullViewH() {
+    const i = Math.min(8, Math.max(2, P.power)) - 2;
+    return 1.45 * (SET_RADIUS[i] / SET_RADIUS[0]);
+  }
+
+  function setPower(d) {
+    const v = Math.min(8, Math.max(2, Math.round(d)));
+    if (v === P.power) return;
+    P.power = v;
+    document.getElementById('s-power').value = String(v);
+    document.getElementById('o-power').textContent = 'z^' + v;
+    ref.valid = false;   // orbit + coefficients are per-d
+    bumpInteract();
+    toast('z^' + v + ' + c');
+  }
+
+  // Depth needs iterations: the band of "escapes just past the budget" gets
+  // thinner the deeper you go. The old curve flattened at 700 below h=4.6e-5,
+  // so deep views painted almost every pixel as interior — a black screen at
+  // exactly the zooms this renderer exists for.
+  function suggestIter() {
+    const zoom = Math.log10(1.45 / Math.max(VIEW.h, 1e-300));
+    return Math.round(Math.min(2000, Math.max(180, 180 + 135 * zoom)));
+  }
+
+  function fullIter() {
+    return P.autoIter
+      ? Math.min(2000, Math.max(P.maxIter, suggestIter()))
+      : P.maxIter;
+  }
+
+  // Interaction cost is paid in resolution, never in iteration count. The
+  // iteration budget sets where the escaped/interior boundary falls, so
+  // lowering it during a drag makes the filaments visibly thin out and the rim
+  // glow dim — a full-picture pop at gesture start and again 180ms after
+  // release. Rendering smaller and upscaling only costs sharpness.
+  function interactScale() {
+    return (interacting && P.fastMove) ? P.fastScale : 1;
+  }
+
+  function writeUniforms(iter, rw, rh) {
+    const refOffX = VIEW.cx - ref.cx;
+    const refOffY = VIEW.cy - ref.cy;
+    params[0] = rw; params[1] = rh;
+    params[2] = VIEW.h;
+    params[3] = performance.now() / 1000;
+    params[4] = iter;
+    params[5] = P.palSpeed;
+    params[6] = P.palScale;
+    params[7] = P.glow;
+    params[8] = P.vignette;
+    params[9] = animClock;
+    params[10] = 0; // refBase
+    params[11] = Math.max(ref.n, 1);
+    params[12] = Number.isFinite(refOffX) ? refOffX : 0;
+    params[13] = Number.isFinite(refOffY) ? refOffY : 0;
+    params[14] = P.power;
+    // A reference sitting exactly on the origin has R ≡ 0, so every
+    // perturbation coefficient vanishes (for d > 2 the series collapses to
+    // Z <- dc and the frame goes black). Treat that as plain iteration, which
+    // is what R ≡ 0 means: Z is the orbit itself.
+    const originRef = ref.plain || (ref.cx === 0 && ref.cy === 0);
+    params[15] = originRef ? 1 : 0;
+    device.queue.writeBuffer(ubo, 0, params);
+  }
+
+  // Rebuild the reference only when we must. A rebuild walks ~maxIter f64
+  // steps — fine occasionally, but doing it every pan frame is what made the
+  // interaction stutter.
+  function ensureReference() {
+    // Always build a full-quality orbit so ending a gesture does not trigger
+    // a rebuild just to raise the iteration budget back up.
+    const iter = fullIter();
+    const h = Math.max(VIEW.h, 1e-300);
+    const off = Number.isFinite(ref.cx)
+      ? Math.hypot(VIEW.cx - ref.cx, VIEW.cy - ref.cy)
+      : Infinity;
+    const drift = Number.isFinite(ref.viewCx)
+      ? Math.hypot(VIEW.cx - ref.viewCx, VIEW.cy - ref.viewCy)
+      : Infinity;
+
+    // `off` travels to the GPU as an f32 uniform, so it has to stay small
+    // *relative to the view*. Its quantisation is off*1.2e-7, i.e.
+    // off/h * 6e-8 * H pixels, so off = 8h is still well under a pixel even on
+    // a 2000px-tall canvas. At off = 1e-2 with h = 1e-9 it was ~40px blocks.
+    const tooFar = !ref.plain && off > 8 * h;
+    // Zooming in place barely moves the centre, so drift alone never fires —
+    // the reference would silently go stale while h drops by six orders of
+    // magnitude. Re-evaluate whenever the zoom changed by 2x.
+    const rezoomed = Math.abs(Math.log2(VIEW.h / ref.h)) > 1;
+
+    if (ref.valid && ref.power === P.power && iter <= ref.iter &&
+        drift <= 0.25 * h && !tooFar && !rezoomed) return;
+
+    // Build a little more than we need so a climbing auto-iter does not
+    // rebuild on every step. Clamped to the fixed buffer: `?iter=` can ask for
+    // more than the UI slider allows.
+    const target = Math.min(
+      REF_SLOTS - 1,
+      Math.max(iter, Math.min(2000, Math.ceil(iter * 1.35) + 64))
+    );
+
+    const hw = VIEW.h * (W / Math.max(H, 1));
+    const pick = pickReference(VIEW.cx, VIEW.cy, hw, VIEW.h, target, P.power);
+
+    let rx, ry, plain = false, trusted = true;
+    if (pick.survived) {
+      rx = pick.cx; ry = pick.cy;
+    } else if (ref.valid && !ref.plain && off <= 8 * h) {
+      // Nothing in view survived the budget, but a reference we already trust
+      // is still close enough. Keep it rather than flip between perturbation
+      // and plain iteration mid-drag — that flip is itself a visible pop at
+      // depth. (If it had drifted past 8h we would not be here.)
+      rx = ref.cx; ry = ref.cy;
+    } else if (VIEW.h >= PLAIN_MIN_H) {
+      // No usable reference and we are shallow enough that f32 can hold the
+      // coordinate: the frame is all exterior, nothing needs a long orbit, and
+      // plain iteration is exact. A reference pinned at the origin *is* plain
+      // iteration — R ≡ 0 makes the shader do Z <- Z^2 + dc — and unlike a dead
+      // reference it never lights up the "interior".
+      rx = 0; ry = 0; plain = true;
+    } else {
+      // Deep, and the grid found no survivor. The origin is useless down here
+      // (see `off` above), so take the longest-lived sample: its orbit still
+      // outlives most of the frame, and being near the centre keeps the
+      // offsets resolvable.
+      rx = pick.cx; ry = pick.cy; trusted = false;
+    }
+
+    let orbit = computeReference(rx, ry, target, P.power);
+    if (trusted && orbit.escaped) {
+      // Safety net: a point that was trusted for a shorter budget may die
+      // inside this one. Never ship a dead reference.
+      if (VIEW.h >= PLAIN_MIN_H) {
+        rx = 0; ry = 0; plain = true;
+      } else {
+        rx = pick.cx; ry = pick.cy; plain = false;
+      }
+      orbit = computeReference(rx, ry, target, P.power);
+    }
+
+    // Block 0 is the orbit, block k is D_k = C(d,k)·R^(d-k).
+    const block = (ar, ai) => {
+      const a = new Float32Array(orbit.n * 2);
+      for (let i = 0; i < orbit.n; i++) { a[i * 2] = ar[i]; a[i * 2 + 1] = ai[i]; }
+      return a;
+    };
+    device.queue.writeBuffer(refBuf, 0, block(orbit.zr, orbit.zi));
+    for (let k = 0; k < orbit.coef.length; k++) {
+      const c = orbit.coef[k];
+      device.queue.writeBuffer(refBuf, (k + 1) * REF_SLOTS * 8, c);
+    }
+
+    ref.cx = rx;
+    ref.cy = ry;
+    ref.iter = target;
+    ref.n = orbit.n;
+    ref.plain = plain;
+    ref.power = P.power;
+    ref.h = VIEW.h;
+    ref.viewCx = VIEW.cx;
+    ref.viewCy = VIEW.cy;
+    ref.valid = true;
+  }
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.1, (now - lastT) / 1000);
+    lastT = now;
+    if (animating) animClock += dt;
+
+    const k = 1 - Math.exp(-dt * 18);
+    const dx = VIEW.tx - VIEW.cx;
+    const dy = VIEW.ty - VIEW.cy;
+    const dh = Math.max(VIEW.th / Math.max(VIEW.h, 1e-300), 1e-30);
+    VIEW.cx += dx * k;
+    VIEW.cy += dy * k;
+    VIEW.h *= Math.exp(Math.log(dh) * k);
+
+    const iter = fullIter();
+    ensureReference();
+
+    // Render size: full canvas at rest, a fraction of it mid-gesture.
+    const scale = interactScale();
+    const rw = Math.max(1, Math.round(W * scale));
+    const rh = Math.max(1, Math.round(H * scale));
+    const direct = (rw === W && rh === H);
+    if (!direct) ensureScene(W, H);
+    writeUniforms(iter, rw, rh);
+
+    const encoder = device.createCommandEncoder({ label: 'frame' });
+    const target = direct ? ctx.getCurrentTexture().createView() : sceneView;
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: target,
+        clearValue: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    if (!direct) pass.setViewport(0, 0, rw, rh, 0, 1);
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
+    pass.draw(3);
+    pass.end();
+
+    if (!direct) {
+      // Texel centres, not edges: uv 0..1 must land on 0.5/w .. (n-0.5)/w or the
+      // upscale picks up a half-texel of the stale region at the border.
+      blitUv[0] = (rw - 1) / sceneW;
+      blitUv[1] = (rh - 1) / sceneH;
+      blitUv[2] = 0.5 / sceneW;
+      blitUv[3] = 0.5 / sceneH;
+      device.queue.writeBuffer(blitUbo, 0, blitUv);
+
+      const present = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: ctx.getCurrentTexture().createView(),
+          clearValue: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      present.setPipeline(blitPipeline);
+      present.setBindGroup(0, blitBind);
+      present.draw(3);
+      present.end();
+    }
+    device.queue.submit([encoder.finish()]);
+
+    fpsAcc += dt; fpsN++; fpsT += dt;
+    if (fpsT > 0.4) {
+      const fps = fpsN / fpsAcc;
+      hudFps.innerHTML =
+        `<span class="accent">${fps.toFixed(0)} fps</span>  ` +
+        `<span class="dim">${(1000 / Math.max(fps, 1e-3)).toFixed(2)} ms</span>  ` +
+        `<span class="dim">iter</span> ${iter}  ` +
+        `<span class="dim">z^</span>${P.power}  ` +
+        `<span class="dim">${W}×${H}</span>` +
+        (direct ? '' : ` <span class="dim">→ ${rw}×${rh}</span>`);
+      fpsAcc = 0; fpsN = 0; fpsT = 0;
+    }
+
+    hudView.innerHTML =
+      `<span class="dim">c</span>  ${formatCoord(VIEW.cx, VIEW.h)} <span class="dim">+</span> ` +
+      `${formatCoord(VIEW.cy, VIEW.h)}i` +
+      `   <span class="dim">half-h</span> ${VIEW.h.toExponential(3)}` +
+      `   <span class="dim">zoom</span> ×${(1.45 / VIEW.h).toExponential(2)}`;
+
+    const prec = document.getElementById('prec-h');
+    if (prec) prec.textContent = VIEW.h.toExponential(3);
+  }
+
+  resize();
+  // Allocate the offscreen target up front so the first frame of the first
+  // gesture does not pay for a texture allocation.
+  ensureScene(W, H);
+  addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 80);
+  });
+  requestAnimationFrame(frame);
+}
+
+main().catch((err) => {
+  const el = document.getElementById('err');
+  if (el.style.display !== 'block') {
+    fail('启动失败：' + err.message, err.stack || String(err));
+  }
+});
+</script>
+</body>
+</html>
